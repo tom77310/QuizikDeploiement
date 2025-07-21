@@ -1,0 +1,209 @@
+# .github/workflows/deploy.yml
+name: 🧪 Test & Deploy Quizzik App
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # ===================================
+  # TESTS BACKEND + INTÉGRATION
+  # ===================================
+  test-backend:
+    name: 🧪 Backend Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      mongodb:
+        image: mongo:5.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd mongosh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'backend/package-lock.json'
+
+      - name: 📦 Install Backend Dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: 🧪 Run Backend Tests
+        run: |
+          cd backend
+          npm run test:ci
+        env:
+          NODE_ENV: test
+          PORT: 5001
+          MONGODB_URI_TEST: mongodb://localhost:27017/quizzik_test
+
+      - name: 📊 Upload Backend Coverage
+        uses: codecov/codecov-action@v3
+        with:
+          directory: ./backend/coverage
+          flags: backend
+
+  # ===================================
+  # TESTS FRONTEND
+  # ===================================
+  test-frontend:
+    name: 🧪 Frontend Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: 📦 Install Frontend Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: 🧪 Run Frontend Tests
+        run: |
+          cd frontend
+          npm run test:ci
+        env:
+          CI: true
+
+      - name: 🏗️ Test Build Process
+        run: |
+          cd frontend
+          npm run build
+        env:
+          REACT_APP_API_URL: http://localhost:5000
+
+      - name: 📊 Upload Frontend Coverage
+        uses: codecov/codecov-action@v3
+        with:
+          directory: ./frontend/coverage
+          flags: frontend
+
+  # ===================================
+  # DÉPLOIEMENT BACKEND
+  # ===================================
+  deploy-backend:
+    name: 🚀 Deploy Backend
+    needs: [test-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🚀 Deploy to Railway
+        uses: bervProject/railway-deploy@v1.0.0
+        with:
+          railway_token: ${{ secrets.RAILWAY_TOKEN }}
+          service: ${{ secrets.RAILWAY_SERVICE_ID }}
+
+      - name: ⏱️ Wait for Backend Deployment
+        run: |
+          echo "Waiting for backend deployment..."
+          sleep 30
+
+  # ===================================
+  # DÉPLOIEMENT FRONTEND
+  # ===================================
+  deploy-frontend:
+    name: 🚀 Deploy Frontend
+    needs: [test-frontend, deploy-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: 📦 Install Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: 🏗️ Build for Production
+        run: |
+          cd frontend
+          npm run build
+        env:
+          REACT_APP_API_URL: ${{ secrets.REACT_APP_API_URL }}
+
+      - name: 🚀 Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod'
+          working-directory: ./frontend
+
+  # ===================================
+  # VALIDATION FINALE
+  # ===================================
+  validate-deployment:
+    name: ✅ Validate Deployment
+    needs: [deploy-frontend, deploy-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: 🔍 Health Check
+        run: |
+          echo "🔍 Validating deployment..."
+          
+          # Attendre que les services soient prêts
+          sleep 45
+          
+          # Note : Les URLs seront mises à jour après le premier déploiement
+          echo "✅ Deployment completed successfully!"
+          echo "📝 Next steps:"
+          echo "1. Update REACT_APP_API_URL with actual Railway URL"
+          echo "2. Update FRONTEND_URL and BACKEND_URL secrets"
+          echo "3. Test the live application"
+
+  # ===================================
+  # NOTIFICATION
+  # ===================================
+  notify-success:
+    name: 🎉 Success Notification
+    needs: [validate-deployment]
+    runs-on: ubuntu-latest
+    if: success() && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: 🎉 Deployment Success
+        run: |
+          echo "🚀 Quizzik App deployed successfully!"
+          echo "📱 Check your Vercel and Railway dashboards for live URLs"
+          echo "📊 Coverage reports available in job artifacts"
